@@ -10,6 +10,7 @@ from datetime import datetime
 from tqdm import tqdm
 import platform
 import subprocess
+import ssl
 
 # Define el archivo de secretos y los permisos que necesitas
 CLIENT_SECRETS_FILE = "credentials.json"
@@ -58,19 +59,31 @@ def create_youtube_client(credentials):
     youtube = googleapiclient.discovery.build("youtube", "v3", credentials=credentials)
     return youtube
 
-def check_quota(youtube):
-    try:
-        # Realizar una solicitud sencilla para comprobar la cuota
-        request = youtube.search().list(part="snippet", q="test", maxResults=1)
-        response = request.execute()
-        print("Yuju! Tenemos cuota para avanzar.")
-        return True
-    except googleapiclient.errors.HttpError as e:
-        if "quotaExceeded" in str(e):
-            print("F**k, no podemos avanzar, tenemos que esperar.")
-            return False
-        else:
-            raise
+def check_quota(youtube, max_retries=3):
+    """Comprueba la disponibilidad de la cuota con reintentos si hay problemas de SSL."""
+    for attempt in range(max_retries):
+        try:
+            # Realizar una solicitud sencilla para comprobar la cuota
+            request = youtube.search().list(part="snippet", q="test", maxResults=1)
+            response = request.execute()
+            print("Yuju! Tenemos cuota para avanzar.")
+            return True
+        except googleapiclient.errors.HttpError as e:
+            if "quotaExceeded" in str(e):
+                print("F**k, no podemos avanzar, tenemos que esperar.")
+                return False
+            else:
+                raise
+        except ssl.SSLEOFError as ssl_error:
+            print(f"Problema SSL: {ssl_error}. Intento {attempt + 1} de {max_retries}. Esperando 5 segundos...")
+            time.sleep(5)
+        except Exception as e:
+            print(f"Error inesperado: {e}. Intento {attempt + 1} de {max_retries}. Esperando 5 segundos...")
+            time.sleep(5)
+
+    # Si agotamos todos los intentos, devolvemos False
+    print("Error SSL persistente después de varios intentos. No se pudo comprobar la cuota.")
+    return False
 
 def display_quota_info():
     # Como la API de YouTube no proporciona directamente la cuota restante,

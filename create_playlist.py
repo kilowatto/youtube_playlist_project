@@ -274,12 +274,11 @@ def main():
     display_quota_info()
 
     # Verificar si tenemos cuota disponible antes de continuar
-    if not check_quota(youtube):
+    while True:
+        if check_quota(youtube):
+            break
         print("Esperaremos 60 minutos antes de reintentar.")
         countdown(60)
-        if not check_quota(youtube):
-            print("No hay suficiente cuota. Terminando el proceso.")
-            return
 
     # Definir el título y descripción de la playlist
     playlist_title = "Navidad 2024"

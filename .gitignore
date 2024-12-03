@@ -1,0 +1,5 @@
+venv/
+credentials.json
+/credentials.json
+error.log
+.gitignore

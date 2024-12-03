@@ -15,6 +15,7 @@ import ssl
 # Define el archivo de secretos y los permisos que necesitas
 CLIENT_SECRETS_FILE = "credentials.json"
 SONG_LIST_CSV = "songs_list.csv"
+ERROR_LOG_FILE = "error.log"
 
 # Parámetros de autenticación
 SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
@@ -26,6 +27,12 @@ def clear_screen():
     else:
         os.system('clear')  # Para Linux y MacOS
 
+def log_error(message):
+    """Registrar errores en un archivo de log."""
+    with open(ERROR_LOG_FILE, mode="a", encoding="utf-8") as log_file:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_file.write(f"[{timestamp}] {message}\n")
+
 def authenticate():
     flow = InstalledAppFlow.from_client_secrets_file(
         CLIENT_SECRETS_FILE, scopes=SCOPES)
@@ -34,6 +41,7 @@ def authenticate():
         # Intenta abrir el navegador en localhost automáticamente
         credentials = flow.run_local_server(port=34067)
     except Exception as e:
+        log_error(f"Error durante la autenticación: {e}")
         print("No se pudo abrir el navegador automáticamente. Procederemos manualmente.")
         auth_url, _ = flow.authorization_url(prompt='consent')
         print(f"Por favor, visita la siguiente URL para autorizar la aplicación: {auth_url}")
@@ -47,6 +55,7 @@ def authenticate():
                 # Otro entorno - intentar abrir el navegador estándar
                 webbrowser.open(auth_url, new=1)
         except Exception as browser_error:
+            log_error(f"No se pudo abrir el navegador automáticamente: {browser_error}")
             print(f"No se pudo abrir el navegador automáticamente: {browser_error}")
 
         code = input("Introduce el código de autorización que obtuviste: ")
@@ -59,7 +68,7 @@ def create_youtube_client(credentials):
     youtube = googleapiclient.discovery.build("youtube", "v3", credentials=credentials)
     return youtube
 
-def check_quota(youtube, max_retries=3):
+def check_quota(youtube, max_retries=5):
     """Comprueba la disponibilidad de la cuota con reintentos si hay problemas de SSL."""
     for attempt in range(max_retries):
         try:
@@ -70,18 +79,23 @@ def check_quota(youtube, max_retries=3):
             return True
         except googleapiclient.errors.HttpError as e:
             if "quotaExceeded" in str(e):
+                log_error(f"Cuota excedida al intentar verificar la cuota: {e}")
                 print("F**k, no podemos avanzar, tenemos que esperar.")
                 return False
             else:
+                log_error(f"Error HTTP al intentar verificar la cuota: {e}")
                 raise
         except ssl.SSLEOFError as ssl_error:
-            print(f"Problema SSL: {ssl_error}. Intento {attempt + 1} de {max_retries}. Esperando 5 segundos...")
-            time.sleep(5)
+            log_error(f"Problema SSL: {ssl_error}. Intento {attempt + 1} de {max_retries}.")
+            print(f"Problema SSL: {ssl_error}. Intento {attempt + 1} de {max_retries}. Esperando 10 segundos...")
+            time.sleep(10)  # Espera antes de reintentar
         except Exception as e:
-            print(f"Error inesperado: {e}. Intento {attempt + 1} de {max_retries}. Esperando 5 segundos...")
-            time.sleep(5)
+            log_error(f"Error inesperado durante la verificación de la cuota: {e}")
+            print(f"Error inesperado: {e}. Intento {attempt + 1} de {max_retries}. Esperando 10 segundos...")
+            time.sleep(10)
 
     # Si agotamos todos los intentos, devolvemos False
+    log_error("Error SSL persistente después de varios intentos. No se pudo comprobar la cuota.")
     print("Error SSL persistente después de varios intentos. No se pudo comprobar la cuota.")
     return False
 
@@ -101,38 +115,46 @@ def countdown(minutes):
             time_left = f"Esperando {remaining_minutes - 1:02d} minutos y {remaining_seconds:02d} segundos para el siguiente intento."
             print(time_left, end='\r')
             time.sleep(1)
-    print("Verificando cuota nuevamente...")
+    print("\nVerificando cuota nuevamente...")
 
 def get_or_create_playlist(youtube, title, description):
     # Buscar si la playlist ya existe
-    request = youtube.playlists().list(
-        part="snippet",
-        maxResults=50,
-        mine=True
-    )
-    response = request.execute()
+    try:
+        request = youtube.playlists().list(
+            part="snippet",
+            maxResults=50,
+            mine=True
+        )
+        response = request.execute()
 
-    for item in response.get("items", []):
-        if item["snippet"]["title"] == title:
-            return item["id"]
+        for item in response.get("items", []):
+            if item["snippet"]["title"] == title:
+                return item["id"]
 
-    # Si no existe, crear una nueva
-    request = youtube.playlists().insert(
-        part="snippet,status",
-        body={
-            "snippet": {
-                "title": title,
-                "description": description,
-                "tags": ["Christmas", "Holiday", "Music"],
-                "defaultLanguage": "en"
-            },
-            "status": {
-                "privacyStatus": "public"
+        # Si no existe, crear una nueva
+        request = youtube.playlists().insert(
+            part="snippet,status",
+            body={
+                "snippet": {
+                    "title": title,
+                    "description": description,
+                    "tags": ["Christmas", "Holiday", "Music"],
+                    "defaultLanguage": "en"
+                },
+                "status": {
+                    "privacyStatus": "public"
+                }
             }
-        }
-    )
-    response = request.execute()
-    return response["id"]
+        )
+        response = request.execute()
+        return response["id"]
+
+    except googleapiclient.errors.HttpError as e:
+        log_error(f"Error al obtener o crear la playlist: {e}")
+        raise
+    except Exception as e:
+        log_error(f"Error inesperado al obtener o crear la playlist: {e}")
+        raise
 
 def search_and_add_videos(youtube, playlist_id):
     # Leer el archivo CSV de canciones
@@ -206,6 +228,7 @@ def search_and_add_videos(youtube, playlist_id):
                     song_row.update({"Status": "Not Found"})
 
             except googleapiclient.errors.HttpError as e:
+                log_error(f"Error al añadir '{song}': {e}")
                 if "quotaExceeded" in str(e):
                     quota_exceeded_count += 1
                     print("F**k, no podemos avanzar, tenemos que esperar.")
@@ -213,11 +236,12 @@ def search_and_add_videos(youtube, playlist_id):
                     writer.writerow(song_row)
                     continue
 
-                song_row.update({"Status": f"Error: {str(e)}"})
+                song_row.update({"Status": f"Error: {e}"})
                 time.sleep(5)  # Espera antes de reintentar
 
             except Exception as e:
-                song_row.update({"Status": f"Unexpected Error: {str(e)}"})
+                log_error(f"Error inesperado al añadir '{song}': {e}")
+                song_row.update({"Status": f"Unexpected Error: {e}"})
 
             # Escribir la canción (actualizada o no)
             writer.writerow(song_row)
